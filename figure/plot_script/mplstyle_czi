@@ -1,0 +1,31 @@
+font.family : Arial
+font.size : 8
+pdf.fonttype : 42
+figure.dpi: 150
+figure.titlesize: 8
+
+axes.spines.right : False
+axes.spines.top : False
+axes.linewidth : 0.5
+axes.labelsize : 8
+xtick.labelsize : 6
+ytick.labelsize : 6
+xtick.major.width : 0.5
+ytick.major.width : 0.5
+xtick.major.size : 1.5
+ytick.major.size : 1.5
+
+legend.fontsize: 6
+
+grid.linewidth : 0.5
+grid.color : "lightgrey"
+axes.axisbelow : True
+
+boxplot.boxprops.color: "black"
+boxplot.medianprops.color: "black"
+boxplot.whiskerprops.color: "black"
+boxplot.capprops.color: "black"
+boxplot.boxprops.linewidth: 0.5
+boxplot.medianprops.linewidth: 0.5
+boxplot.whiskerprops.linewidth: 0.5
+boxplot.capprops.linewidth: 0.5
