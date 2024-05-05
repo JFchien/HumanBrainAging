@@ -1,0 +1,255 @@
+# ==================================================
+# Import
+# ==================================================
+
+
+import yaml
+import pathlib
+from cemba_data.hisat3n import *
+
+
+# ==================================================
+# Preparation
+# ==================================================
+
+
+# read mapping config and put all variables into the locals()
+DEFAULT_CONFIG = {
+    'hisat3n_repeat_index_type': '',
+    'r1_adapter': 'AGATCGGAAGAGCACACGTCTGAAC',
+    'r2_adapter': 'AGATCGGAAGAGCGTCGTGTAGGGA',
+    'r1_right_cut': 10,
+    'r2_right_cut': 10,
+    'r1_left_cut': 10,
+    'r2_left_cut': 10,
+    'min_read_length': 30,
+    'num_upstr_bases': 0,
+    'num_downstr_bases': 2,
+    'compress_level': 5,
+    'hisat3n_threads': 11,
+    'post_mapping_script': 'false',
+    'feature_type': 'gene',
+    'id_type': 'gene_id',
+}
+REQUIRED_CONFIG = ['hisat_dna_reference', 'hisat_rna_reference', 'gtf_path', 'reference_fasta', 'chrom_size_path']
+
+local_config = read_mapping_config()
+DEFAULT_CONFIG.update(local_config)
+if 'hisat3n_dna_reference' in DEFAULT_CONFIG:
+    DEFAULT_CONFIG['hisat_dna_reference'] = DEFAULT_CONFIG['hisat3n_dna_reference']
+if 'hisat3n_rna_reference' in DEFAULT_CONFIG:
+    DEFAULT_CONFIG['hisat_rna_reference'] = DEFAULT_CONFIG['hisat3n_rna_reference']
+
+for k, v in DEFAULT_CONFIG.items():
+    if k not in config:
+        config[k] = v
+
+missing_key = []
+for k in REQUIRED_CONFIG:
+    if k not in config:
+        missing_key.append(k)
+if len(missing_key) > 0:
+    raise ValueError('Missing required config: {}'.format(missing_key))
+
+# fastq table and cell IDs
+fastq_table = validate_cwd_fastq_paths()
+CELL_IDS = fastq_table.index.tolist()
+
+mcg_context = 'CGN' if int(config['num_upstr_bases']) == 0 else 'HCGN'
+repeat_index_flag = "--repeat" if config['hisat3n_repeat_index_type'] == 'repeat' else "--no-repeat-index"
+
+
+rule all:
+    input:
+        expand("bam/{cell_id}.hisat3n_dna.rm_rna_reads.deduped.bam.bai", cell_id=CELL_IDS)
+    run:
+        # cleanup
+        shell("rm -rf bam/temp")
+
+
+# ==================================================
+# FASTQ Trimming
+# ==================================================
+
+
+# Trim reads
+# sort the fastq files so that R1 and R2 are in the same order
+rule sort_R1:
+    input:
+        "fastq/{cell_id}-R1.fq.gz",
+    output:
+        temp("fastq/{cell_id}-R1_sort.fq")
+    threads:
+        1.5
+    shell:
+        'zcat {input} | paste - - - - | sort -k1,1 -t " " | tr "\t" "\n" > {output} '
+
+
+rule sort_R2:
+    input:
+        "fastq/{cell_id}-R2.fq.gz",
+    output:
+        temp("fastq/{cell_id}-R2_sort.fq")
+    threads:
+        1.5
+    shell:
+        'zcat {input} | paste - - - - | sort -k1,1 -t " " | tr "\t" "\n" > {output} '
+
+
+rule trim:
+    input:
+        # change to sort_R1 and sort_R2 output if the FASTQ name is disordered
+        R1="fastq/{cell_id}-R1_sort.fq",
+        R2="fastq/{cell_id}-R2_sort.fq"
+    output:
+        R1="fastq/{cell_id}-R1.trimmed.fq.gz",
+        R2="fastq/{cell_id}-R2.trimmed.fq.gz",
+        stats="fastq/{cell_id}.trimmed.stats.txt"
+    threads:
+        1
+    shell:
+        "cutadapt "
+        "-a R1Adapter={config[r1_adapter]} "
+        "-a TSO=AAGCAGTGGTATCAACGCAGAGTGAATGG "
+        "-a TSO_rc=CCATTCACTCTGCGTTGATACCACTGCTT "
+        "-a N6=AAGCAGTGGTATCAACGCAGAGTAC "
+        "-a N6_rc=GTACTCTGCGTTGATACCACTGCTT "
+        "-a 3PpolyT=TTTTTTTTTTTTTTTX "
+        "-a 3PpolyA=AAAAAAAAAAAAAAAX "
+        "-a polyTLong=TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT "
+        "-a polyALong=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "
+        "-a ISPCR_F=AAGCAGTGGTATCAACGCAGAGT "
+        "-a ISPCR_R=ACTCTGCGTTGATACCACTGCTT "
+        "-A R2Adapter={config[r2_adapter]} "
+        "-A TSO=AAGCAGTGGTATCAACGCAGAGTGAATGG "
+        "-A TSO_rc=CCATTCACTCTGCGTTGATACCACTGCTT "
+        "-A N6=AAGCAGTGGTATCAACGCAGAGTAC "
+        "-A N6_rc=GTACTCTGCGTTGATACCACTGCTT "
+        "-A 3PpolyT=TTTTTTTTTTTTTTTX "
+        "-A 3PpolyA=AAAAAAAAAAAAAAAX "
+        "-A polyTLong=TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT "
+        "-A polyALong=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "
+        "-A ISPCR_F=AAGCAGTGGTATCAACGCAGAGT "
+        "-A ISPCR_R=ACTCTGCGTTGATACCACTGCTT "
+        "-g 5PpolyT=XTTTTTTTTTTTTTTT "
+        "-g 5PpolyA=XAAAAAAAAAAAAAAA "
+        "-G 5PpolyT=XTTTTTTTTTTTTTTT "
+        "-G 5PpolyA=XAAAAAAAAAAAAAAA "
+        "--report=minimal "
+        "-O 6 "
+        "-q 20 "
+        "-u {config[r1_left_cut]} "
+        "-u -{config[r1_right_cut]} "
+        "-U {config[r2_left_cut]} "
+        "-U -{config[r2_right_cut]} "
+        "-Z "
+        "-m 30:30 "
+        "--pair-filter 'both' "
+        "-o {output.R1} "
+        "-p {output.R2} "
+        "{input.R1} {input.R2} "
+        "> {output.stats}"
+
+
+# ==================================================
+# HISAT-3N DNA Mapping
+# ==================================================
+
+
+# Paired-end Hisat3n mapping using DNA mode
+rule hisat_3n_pairend_mapping_dna_mode:
+    input:
+        R1="fastq/{cell_id}-R1.trimmed.fq.gz",
+        R2="fastq/{cell_id}-R2.trimmed.fq.gz"
+    output:
+        bam=temp("bam/{cell_id}.hisat3n_dna.unsort.bam"),
+        stats="bam/{cell_id}.hisat3n_dna_summary.txt"
+    threads:
+        8
+    resources:
+        mem_mb=8000
+    shell:
+        "/home/AD/jchien/software/hisat-3n-dev-directional-mapping-reverse/hisat-3n "
+        "{config[hisat_dna_reference]} "
+        "-q "
+        "-1 {input.R1} "
+        "-2 {input.R2} "
+        "--directional-mapping-reverse "  # this can speed up 2X as the snmC reads are directional
+        "--base-change C,T "
+        "{repeat_index_flag} "
+        "--no-spliced-alignment "  # this is important for DNA mapping
+        "--no-temp-splicesite "
+        "-t "
+        "--new-summary "
+        "--summary-file {output.stats} "
+        "--threads {threads} "
+        "| "
+        "samtools view "
+        "-G260 " # keep unmapped reads; remove problematic reads with both "unmapped" and "not primary alignment" flags
+        "-e 'length(seq)>30' " # only keep entries with "qlen" > 30; some entries have no sequence stored in the SAM file due to trimmed reads in fastq and/or hard clipping and/or secondary alignments
+        "-b -o {output.bam}"
+
+
+rule sort_dna_bam:
+    input:
+        "bam/{cell_id}.hisat3n_dna.unsort.bam"
+    output:
+        "bam/{cell_id}.hisat3n_dna.bam"
+    resources:
+        mem_mb=1000
+    threads:
+        4
+    shell:
+        "samtools sort -O BAM -o {output} {input}"
+
+
+rule get_rna_reads_id:
+    input:
+        "bam/{cell_id}.hisat3n_rna.unique_align.rna_reads.bam"
+    output:
+        "bam/{cell_id}.hisat3n_rna.unique_align.rna_reads_id.tsv"
+    resources:
+        mem_mb=1000
+    threads:
+        1
+    shell:
+        """samtools view {input} | awk "BEGINi{{FS="\\t"; OFS="\\t"}} {{read_ids[\$1]++}} END{{for (i in read_ids){{print i}}}}" | sort > {output}"""
+
+
+rule remove_rna_reads_from_bam:
+    input:
+        bam="bam/{cell_id}.hisat3n_dna.bam",
+        rna_read_ids="bam/{cell_id}.hisat3n_rna.unique_align.rna_reads_id.tsv",
+    output:
+        "bam/{cell_id}.hisat3n_dna.rm_rna_reads.bam"
+    resources:
+        mem_mb=1000
+    threads:
+        4
+    shell:
+        "picard FilterSamReads --FILTER excludeReadList -I {input.bam} -O {output} -RLF {input.rna_read_ids}"
+
+
+# remove PCR duplicates
+rule dedup_bam:
+    input:
+        "bam/{cell_id}.hisat3n_dna.rm_rna_reads.bam"
+    output:
+        bam="bam/{cell_id}.hisat3n_dna.rm_rna_reads.deduped.bam",
+        stats="bam/{cell_id}.hisat3n_dna.rm_rna_reads.deduped.matrix.txt"
+    resources:
+        mem_mb=1000
+    threads:
+        2
+    shell:
+        "picard MarkDuplicates I={input} O={output.bam} M={output.stats} "
+        "REMOVE_DUPLICATES=true TMP_DIR=bam/temp/"
+
+
+rule index_bam:
+    input:
+        bam="bam/{cell_id}.hisat3n_dna.rm_rna_reads.deduped.bam"
+    output:
+        bai="bam/{cell_id}.hisat3n_dna.rm_rna_reads.deduped.bam.bai"
+    shell:
+        "samtools index {input.bam}"
