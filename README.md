@@ -1,5 +1,5 @@
 # Cell type-specific effects of age and sex on human cortical neurons
-doi: https://doi.org/10.1101/2023.11.11.566717
+doi: https://doi.org/10.1016/j.neuron.2024.05.013
 
 Code repository for analysis in "Cell type-specific effects of age and sex on human cortical neurons"
 
